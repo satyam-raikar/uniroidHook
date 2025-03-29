@@ -152,8 +152,8 @@ The DeFi ecosystem faces increasing threats from rug pulls, malicious liquidity 
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/satyam-raikar/uniroidHOOK.git
-cd uniroidHOOK
+git clone https://github.com/satyam-raikar/uniroidHook.git
+cd uniroidHook
 ```
 
 2. Install dependencies:
