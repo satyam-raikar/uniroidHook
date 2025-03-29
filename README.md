@@ -229,11 +229,13 @@ forge script script/DeployUniroidHook.s.sol --rpc-url http://localhost:8545 --br
 
 #### Sepolia Testnet
 - **Pool Manager**: [0xE03A1074c86CFeDd5C142C4F04F1a1536e203543](https://sepolia.etherscan.io/address/0xE03A1074c86CFeDd5C142C4F04F1a1536e203543)
-- **UniroidHook**: [0xc459932791d6d2ffaa34f058dccc3ac32dd126c0](https://sepolia.etherscan.io/address/0xc459932791d6d2ffaa34f058dccc3ac32dd126c0)
+- **UniroidHook**: [0x170DC3389d2F1cd5F9A1043E2ad2d12855d6B6C0](https://sepolia.etherscan.io/address/0x170DC3389d2F1cd5F9A1043E2ad2d12855d6B6C0)
+- **TestToken - UHI4**: [0x4bdafadaaedabc581d87d38ced7ab6d19d7a9568](https://sepolia.etherscan.io/address/0x4bdafadaaedabc581d87d38ced7ab6d19d7a9568)
 
 #### Holesky Testnet
 - **Pool Manager**: [0x4fdC9175Bc952e8bDCe2e8cA38d00EAa9dB9a299](https://holesky.etherscan.io/address/0x4fdC9175Bc952e8bDCe2e8cA38d00EAa9dB9a299)
 - **UniroidHook**: [0xC12b826a16B1C00A3f68fB70C09AC757A78C26c0](https://holesky.etherscan.io/address/0xc12b826a16b1c00a3f68fb70c09ac757a78c26c0)
+
 
 ### Holesky Deployment
 
