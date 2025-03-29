@@ -29,7 +29,7 @@ contract MineHookAddress is Script {
 
     function run() external view {
         // Define which network to use
-        address poolManagerAddress = POOL_MANAGER_HOLESKY; // Change this to use a different network
+        address poolManagerAddress = POOL_MANAGER_SEPOLIA; // Using Sepolia for deployment
         
         // Get deployer address from private key
         address deployer;
@@ -46,11 +46,12 @@ contract MineHookAddress is Script {
 
         // Define hook flags for the hook contract
         uint160 flags = uint160(
-            Hooks.AFTER_ADD_LIQUIDITY_FLAG | 
-            Hooks.AFTER_SWAP_FLAG | 
             Hooks.BEFORE_INITIALIZE_FLAG | 
+            Hooks.AFTER_INITIALIZE_FLAG | 
+            Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG |
+            Hooks.AFTER_ADD_LIQUIDITY_FLAG | 
             Hooks.BEFORE_SWAP_FLAG | 
-            Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG
+            Hooks.AFTER_SWAP_FLAG
         );
         
         console.log("Hook flags (decimal):", uint256(flags));

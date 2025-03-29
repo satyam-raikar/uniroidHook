@@ -40,8 +40,24 @@ contract UniroidHook is BaseHook, ERC20 {
     // Mapping to track premium subscribers and their subscription expiration timestamp
     mapping(address => uint256) public isPremiumSubscriber;
 
-    // Mapping to track original swap fees for pools (used to restore fees after premium user swaps)
-    mapping(bytes32 => uint24) public originalPoolFees;
+    // Pool counter for tracking all pools
+    uint256 public poolCounter;
+
+    // Struct to store pool information and module status
+    struct PoolInfo {
+        bytes32 poolId;
+        address token0;
+        address token1;
+        uint24 fee;
+        bool[] moduleStatus; // Array to track status of individual modules
+        uint256 createdAt;
+    }
+
+    // Mapping from counter to PoolInfo
+    mapping(uint256 => PoolInfo) public pools;
+
+    // Direct mapping from poolId to PoolInfo
+    mapping(bytes32 => PoolInfo) public poolsByPoolId;
 
     // Lock period duration in seconds (7 days)
     uint256 private constant LOCK_PERIOD_DURATION = 7 days;
@@ -107,6 +123,8 @@ contract UniroidHook is BaseHook, ERC20 {
     event ReferralCommissionCalculated(address indexed referrer, uint256 amount, bool zeroForOne, int256 deltaAmount0, int256 deltaAmount1);
     event FeeRestored(bytes32 indexed poolId, uint24 restoredFee);
     event TokensMinted(address indexed recipient, uint256 amount);
+    event PoolRegistered(bytes32 indexed poolId, address token0, address token1);
+    event ModuleStatusChanged(bytes32 indexed poolId, uint256 moduleIndex, bool status);
 
     // Errors
     error NotAdmin();
@@ -296,7 +314,7 @@ contract UniroidHook is BaseHook, ERC20 {
         return
             Hooks.Permissions({
                 beforeInitialize: true,
-                afterInitialize: false,
+                afterInitialize: true,
                 beforeAddLiquidity: false,
                 beforeRemoveLiquidity: true,
                 afterAddLiquidity: true,
@@ -348,6 +366,44 @@ contract UniroidHook is BaseHook, ERC20 {
         return this.beforeInitialize.selector;
     }
 
+    function _afterInitialize(
+        address /* sender */,
+        PoolKey calldata key,
+        uint160 /* sqrtPriceX96 */,
+        int24 /* tick */
+    ) internal override onlyPoolManager returns (bytes4) {
+        // Generate the pool ID from the key
+        bytes32 poolId = keccak256(abi.encode(key));
+        
+        // Increment pool counter
+        poolCounter++;
+        
+        // Create a new PoolInfo struct
+        PoolInfo memory newPool = PoolInfo({
+            poolId: poolId,
+            token0: Currency.unwrap(key.currency0),
+            token1: Currency.unwrap(key.currency1),
+            fee: key.fee,
+            moduleStatus: new bool[](5), // Initialize with 5 modules, can be adjusted as needed
+            createdAt: block.timestamp
+        });
+        
+        // Store the pool information
+        pools[poolCounter] = newPool;
+        poolsByPoolId[poolId] = newPool;
+        
+        // Enable the hook for this pool
+        isHookEnabledOnPool[poolId] = true;
+        
+        // Emit event for hook status change
+        emit HookStatusChanged(poolId, true);
+        
+        // Emit event for pool registration
+        emit PoolRegistered(poolId, newPool.token0, newPool.token1);
+        
+        return this.afterInitialize.selector;
+    }
+
     function _beforeSwap(
         address /* sender */,
         PoolKey calldata key,
@@ -396,11 +452,6 @@ contract UniroidHook is BaseHook, ERC20 {
                 referrer != user &&
                 referralType == REFERRAL_TYPE_FEE_COMMISSION
             ) {
-                // Store the original fee for this pool if not already stored
-                if (originalPoolFees[poolId] == 0) {
-                    originalPoolFees[poolId] = key.fee;
-                }
-                
                 // Calculate the referrer's commission (50% of the fee)
                 uint24 referrerCommission = uint24(
                     (uint256(key.fee) * REFERRAL_FEE_COMMISSION_PERCENT) / 100
@@ -433,11 +484,6 @@ contract UniroidHook is BaseHook, ERC20 {
                 user != address(0) &&
                 isPremiumSubscriber[user] > block.timestamp
             ) {
-                // Store the original fee for this pool if not already stored
-                if (originalPoolFees[poolId] == 0) {
-                    originalPoolFees[poolId] = key.fee;
-                }
-
                 // Calculate the discounted fee (e.g., 50% discount)
                 uint24 discountedFee = uint24(
                     (uint256(key.fee) * (100 - PREMIUM_FEE_DISCOUNT_PERCENT)) /
@@ -938,5 +984,55 @@ contract UniroidHook is BaseHook, ERC20 {
         }
 
         return this.beforeRemoveLiquidity.selector;
+    }
+
+    /**
+     * @notice Get pool information by pool ID
+     * @param poolId The ID of the pool to query
+     * @return info The pool information struct
+     * @return exists Whether the pool exists
+     */
+    function getPoolInfoByPoolId(bytes32 poolId) external view returns (PoolInfo memory info, bool exists) {
+        info = poolsByPoolId[poolId];
+        exists = info.poolId != bytes32(0);
+        return (info, exists);
+    }
+    
+    /**
+     * @notice Get pool information by counter
+     * @param counter The counter value of the pool to query
+     * @return info The pool information struct
+     * @return exists Whether the pool exists
+     */
+    function getPoolInfoByCounter(uint256 counter) external view returns (PoolInfo memory info, bool exists) {
+        if (counter == 0 || counter > poolCounter) {
+            return (PoolInfo({
+                poolId: bytes32(0),
+                token0: address(0),
+                token1: address(0),
+                fee: 0,
+                moduleStatus: new bool[](0),
+                createdAt: 0
+            }), false);
+        }
+        
+        return (pools[counter], true);
+    }
+    
+    /**
+     * @notice Set module status for a specific pool
+     * @param poolId The ID of the pool
+     * @param moduleIndex The index of the module to update
+     * @param status The new status for the module
+     */
+    function setModuleStatus(bytes32 poolId, uint256 moduleIndex, bool status) external onlyAdmin {
+        PoolInfo storage poolInfo = poolsByPoolId[poolId];
+        require(poolInfo.poolId != bytes32(0), "Pool does not exist");
+        
+        require(moduleIndex < poolInfo.moduleStatus.length, "Invalid module index");
+        
+        poolInfo.moduleStatus[moduleIndex] = status;
+        
+        emit ModuleStatusChanged(poolId, moduleIndex, status);
     }
 }

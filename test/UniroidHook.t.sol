@@ -71,8 +71,12 @@ contract TestUniroidHook is Test, Deployers {
 
         // Deploy hook to an address that has the proper flags set
         uint160 flags = uint160(
-            Hooks.AFTER_ADD_LIQUIDITY_FLAG | Hooks.AFTER_SWAP_FLAG | Hooks.BEFORE_INITIALIZE_FLAG | 
-            Hooks.BEFORE_SWAP_FLAG | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG
+            Hooks.BEFORE_INITIALIZE_FLAG | 
+            Hooks.AFTER_INITIALIZE_FLAG | 
+            Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG |
+            Hooks.AFTER_ADD_LIQUIDITY_FLAG | 
+            Hooks.BEFORE_SWAP_FLAG | 
+            Hooks.AFTER_SWAP_FLAG
         );
         deployCodeTo(
             "UniroidHook.sol",
@@ -186,7 +190,7 @@ contract TestUniroidHook is Test, Deployers {
         // Use a very low sqrt price to ensure we're below the minimum liquidity threshold
         uint160 lowSqrtPrice = 1; // Very low value
         console.log("Using very low sqrt price:", uint256(lowSqrtPrice));
-        console.log("This should be below the minimum threshold of:", hook.MINIMUM_LIQUIDITY_THRESHOLD());
+        // console.log("This should be below the minimum threshold of:", hook.MINIMUM_LIQUIDITY_THRESHOLD());
         
         console.log("Attempting to initialize pool with insufficient liquidity (should revert)...");
         // Try to initialize a pool with liquidity below the threshold
@@ -854,18 +858,18 @@ contract TestUniroidHook is Test, Deployers {
         bytes memory hookData = hook.encodeHookData(
             user,
             referrer,
-            hook.REFERRAL_TYPE_FEE_COMMISSION()
+            1 // REFERRAL_TYPE_FEE_COMMISSION value is 1
         );
         
         // Calculate expected commission for verification later
         uint256 swapAmount = 1 ether;
         uint256 expectedFee = (swapAmount * uint256(key.fee)) / 1e6;
-        uint256 expectedCommission = (expectedFee * hook.REFERRAL_FEE_COMMISSION_PERCENT()) / 100;
+        uint256 expectedCommission = (expectedFee * 50) / 100;
         
         console.log("Swap amount:", swapAmount);
         console.log("Fee rate:", key.fee);
         console.log("Expected fee amount:", expectedFee);
-        console.log("Commission percent:", hook.REFERRAL_FEE_COMMISSION_PERCENT());
+        console.log("Commission percent: 50");
         console.log("Expected commission:", expectedCommission);
         
         PoolSwapTest.TestSettings memory testSettings = PoolSwapTest.TestSettings({
@@ -941,7 +945,7 @@ contract TestUniroidHook is Test, Deployers {
         // Calculate expected commission for verification later
         uint256 swapAmount = 1 ether;
         uint256 expectedFee = (swapAmount * uint256(key.fee)) / 1e6;
-        uint256 expectedCommission = (expectedFee * hook.REFERRAL_FEE_COMMISSION_PERCENT()) / 100;
+        uint256 expectedCommission = (expectedFee * 50) / 100;
         
         console.log("Expected commission amount:", expectedCommission);
         
@@ -982,7 +986,7 @@ contract TestUniroidHook is Test, Deployers {
         console.log("Swap amount:", swapAmount);
         console.log("Fee rate:", feeRate);
         console.log("Expected fee amount:", expectedFee);
-        console.log("Commission percent:", commissionPercent);
+        console.log("Commission percent: 50");
         console.log("Expected commission:", expectedCommission);
         
         // Fund the hook with ETH to simulate fee collection
@@ -1016,6 +1020,121 @@ contract TestUniroidHook is Test, Deployers {
         console.log("=== test_selfReferral completed successfully ===");
     }
     
+    function test_poolInfoTracking() public {
+        console.log("=== Starting test_poolInfoTracking ===");
+        
+        // Calculate pool ID from the key created in setUp
+        bytes32 poolId = keccak256(abi.encode(key));
+        console.log("Pool ID:", uint256(poolId));
+        
+        // Get pool info by pool ID
+        (UniroidHook.PoolInfo memory poolInfo, bool exists) = hook.getPoolInfoByPoolId(poolId);
+        assertTrue(exists, "Pool info should exist");
+        console.log("Pool exists:", exists);
+        
+        // Verify pool info details
+        assertEq(poolInfo.poolId, poolId, "Pool ID should match");
+        assertEq(poolInfo.token0, address(0), "Token0 should be ETH");
+        assertEq(poolInfo.token1, address(token), "Token1 should be TEST token");
+        assertEq(poolInfo.fee, 3000, "Fee should be 3000");
+        console.log("Pool info details verified");
+        
+        // Get pool info by counter
+        uint256 counter = hook.poolCounter();
+        (UniroidHook.PoolInfo memory poolInfoByCounter, bool existsByCounter) = hook.getPoolInfoByCounter(1);
+        assertTrue(existsByCounter, "Pool info by counter should exist");
+        assertEq(poolInfoByCounter.poolId, poolId, "Pool IDs should match");
+        console.log("Pool counter:", counter);
+        console.log("Pool info by counter verified");
+        
+        // Create a new pool
+        MockERC20 newToken = new MockERC20("New Test Token", "NTEST", 18);
+        Currency newTokenCurrency = Currency.wrap(address(newToken));
+        
+        PoolKey memory newKey;
+        (newKey, ) = initPool(
+            ethCurrency,
+            newTokenCurrency,
+            hook,
+            3000,
+            SQRT_PRICE_1_1
+        );
+        bytes32 newPoolId = keccak256(abi.encode(newKey));
+        console.log("New pool ID:", uint256(newPoolId));
+        
+        // Verify pool counter increased
+        uint256 newCounter = hook.poolCounter();
+        assertEq(newCounter, counter + 1, "Pool counter should increase by 1");
+        console.log("New pool counter:", newCounter);
+        
+        // Get new pool info by pool ID
+        (UniroidHook.PoolInfo memory newPoolInfo, bool newExists) = hook.getPoolInfoByPoolId(newPoolId);
+        assertTrue(newExists, "New pool info should exist");
+        assertEq(newPoolInfo.poolId, newPoolId, "New pool ID should match");
+        console.log("New pool info verified");
+        
+        // Test non-existent pool
+        bytes32 fakePoolId = bytes32(uint256(123456789));
+        (UniroidHook.PoolInfo memory fakePoolInfo, bool fakeExists) = hook.getPoolInfoByPoolId(fakePoolId);
+        assertFalse(fakeExists, "Fake pool should not exist");
+        assertEq(fakePoolInfo.poolId, bytes32(0), "Fake pool ID should be zero");
+        console.log("Non-existent pool check passed");
+        
+        console.log("=== test_poolInfoTracking completed successfully ===");
+    }
+    
+    function test_moduleStatus() public {
+        console.log("=== Starting test_moduleStatus ===");
+        
+        // Calculate pool ID from the key created in setUp
+        bytes32 poolId = keccak256(abi.encode(key));
+        console.log("Pool ID:", uint256(poolId));
+        
+        // Get initial pool info
+        (UniroidHook.PoolInfo memory poolInfo, bool exists) = hook.getPoolInfoByPoolId(poolId);
+        assertTrue(exists, "Pool info should exist");
+        
+        // Check initial module status
+        uint256 moduleIndex = 0;
+        bool initialStatus = poolInfo.moduleStatus[moduleIndex];
+        console.log("Initial module status for index", moduleIndex, ":", initialStatus);
+        
+        // Set module status
+        hook.setModuleStatus(poolId, moduleIndex, true);
+        
+        // Get updated pool info
+        (poolInfo, exists) = hook.getPoolInfoByPoolId(poolId);
+        assertTrue(exists, "Pool info should still exist");
+        
+        // Verify module status was updated
+        assertTrue(poolInfo.moduleStatus[moduleIndex], "Module status should be true");
+        console.log("Module status updated successfully");
+        
+        // Set module status back to false
+        hook.setModuleStatus(poolId, moduleIndex, false);
+        
+        // Get updated pool info again
+        (poolInfo, exists) = hook.getPoolInfoByPoolId(poolId);
+        
+        // Verify module status was updated again
+        assertFalse(poolInfo.moduleStatus[moduleIndex], "Module status should be false");
+        console.log("Module status updated back to false successfully");
+        
+        // Try to update non-existent module
+        uint256 invalidModuleIndex = 10;
+        vm.expectRevert("Invalid module index");
+        hook.setModuleStatus(poolId, invalidModuleIndex, true);
+        console.log("Correctly reverted when trying to update non-existent module");
+        
+        // Try to update non-existent pool
+        bytes32 fakePoolId = bytes32(uint256(123456789));
+        vm.expectRevert("Pool does not exist");
+        hook.setModuleStatus(fakePoolId, moduleIndex, true);
+        console.log("Correctly reverted when trying to update non-existent pool");
+        
+        console.log("=== test_moduleStatus completed successfully ===");
+    }
+
     // Helper function to initialize pool as a user
     function initPoolAsUser(
         Currency currency0,

@@ -15,6 +15,9 @@ import {UniroidHook} from "../src/UniroidHook.sol";
 contract DeployUniroidHook is Script {
     // CREATE2 factory address - standard across all EVM chains
     address constant CREATE2_DEPLOYER = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
+    
+    // Sepolia Pool Manager address
+    address constant POOL_MANAGER_SEPOLIA = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
 
     function run() external {
         // Get private key from environment variable
@@ -26,11 +29,11 @@ contract DeployUniroidHook is Script {
         console.log("Deployer address:", deployer);
         
         // Get the pool manager address from environment variable for Sepolia
-        address poolManagerAddress = vm.envAddress("POOL_MANAGER_ADDRESS_SEPOLIA");
+        address poolManagerAddress = POOL_MANAGER_SEPOLIA;
         console.log("Using Sepolia Pool Manager address:", poolManagerAddress);
         
-        // Get the salt from environment variable
-        bytes32 salt = bytes32(0x00000000000000000000000000000000000000000000000000000000000010df);
+        // Get the salt from environment variable or use the mined salt
+        bytes32 salt = bytes32(0x0000000000000000000000000000000000000000000000000000000000002f4c);
         console.log("Using salt:", vm.toString(salt));
         
         // Start the broadcast to record and send transactions
@@ -54,3 +57,5 @@ contract DeployUniroidHook is Script {
         console.log("UniroidHook deployed successfully to Sepolia!");
     }
 }
+
+// forge script script/DeployUniroidHook.s.sol --rpc-url https://eth-sepolia.public.blastapi.io --broadcast
