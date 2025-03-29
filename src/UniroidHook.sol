@@ -2,16 +2,17 @@
 pragma solidity 0.8.26;
 
 import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
-import {ERC20} from "solmate/src/tokens/ERC20.sol";
-
-import {Currency} from "v4-core/types/Currency.sol";
-import {PoolKey} from "v4-core/types/PoolKey.sol";
-import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
-import {BeforeSwapDelta} from "v4-core/types/BeforeSwapDelta.sol";
-
-import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
-
 import {Hooks} from "v4-core/libraries/Hooks.sol";
+import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
+import {PoolKey} from "v4-core/types/PoolKey.sol";
+import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
+import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
+import {Currency} from "v4-core/types/Currency.sol";
+import {BeforeSwapDelta} from "v4-core/types/BeforeSwapDelta.sol";
+import {IERC20} from "forge-std/interfaces/IERC20.sol";
+import {ERC20} from "solmate/src/tokens/ERC20.sol";
+import {IMaliciousCodeDetectionServiceManager} from "./interfaces/IMaliciousCodeDetectionServiceManager.sol";
+import {IVestingVerificationServiceManager} from "./interfaces/IVestingVerificationServiceManager.sol";
 
 contract UniroidHook is BaseHook, ERC20 {
     // Hook data keys
@@ -98,6 +99,16 @@ contract UniroidHook is BaseHook, ERC20 {
     // poolId => user => ReferralCommission
     mapping(bytes32 => mapping(address => ReferralCommission)) public pendingReferralCommissions;
 
+    // EigenLayer AVS integration
+    IMaliciousCodeDetectionServiceManager public maliciousCodeDetectionService;
+    IVestingVerificationServiceManager public vestingVerificationService;
+    
+    // Mapping to track malicious code detection tasks for pools
+    mapping(bytes32 => uint32) public poolMaliciousCodeTasks;
+    
+    // Mapping to track vesting verification tasks for pools
+    mapping(bytes32 => uint32) public poolVestingVerificationTasks;
+
     // Events
     event AdminChanged(address indexed previousAdmin, address indexed newAdmin);
     event HookStatusChanged(bytes32 indexed poolId, bool enabled);
@@ -125,6 +136,10 @@ contract UniroidHook is BaseHook, ERC20 {
     event TokensMinted(address indexed recipient, uint256 amount);
     event PoolRegistered(bytes32 indexed poolId, address token0, address token1);
     event ModuleStatusChanged(bytes32 indexed poolId, uint256 moduleIndex, bool status);
+    event MaliciousCodeTaskCreated(bytes32 indexed poolId, uint32 taskIndex, address tokenAddress);
+    event MaliciousCodeTaskResponded(bytes32 indexed poolId, uint32 taskIndex, bool result);
+    event VestingVerificationTaskCreated(bytes32 indexed poolId, uint32 taskIndex, address tokenAddress, address projectAddress);
+    event VestingVerificationTaskResponded(bytes32 indexed poolId, uint32 taskIndex, bool result);
 
     // Errors
     error NotAdmin();
@@ -134,6 +149,8 @@ contract UniroidHook is BaseHook, ERC20 {
     error AVSVerificationFailed();
     error LiquidityLockPeriodNotExpired(uint256 unlockTime);
     error InsufficientPayment();
+    error UnauthorizedAVSResponse();
+    error TaskNotFound();
 
     constructor(
         IPoolManager _manager,
@@ -276,33 +293,211 @@ contract UniroidHook is BaseHook, ERC20 {
     }
 
     /**
-     * @notice Placeholder function for checking vesting or token lock status
-     * @dev Will be replaced with actual EigenLayer AVS integration
+     * @notice Check for vesting or token lock status using EigenLayer AVS
+     * @dev Uses the EigenLayer AVS service to verify if there is a valid vesting or token lock for the project
+     * @param poolId The ID of the pool to check
      * @return result Boolean indicating if the pool has valid vesting or token lock
      */
     function _checkVestingOrTokenLock(
-        bytes32 /* poolId */
-    ) internal pure returns (bool) {
-        // Placeholder - will be implemented with EigenLayer AVS integration
-        // This will verify if there is a valid vesting done or tokens locked for the project
-
-        // For now, return true to allow testing
-        return true;
+        bytes32 poolId
+    ) internal view returns (bool) {
+        // If no vesting verification service is set, return true (assume valid vesting)
+        if (address(vestingVerificationService) == address(0)) {
+            return true;
+        }
+        
+        // Check if we already have a task for this pool
+        uint32 taskIndex = poolVestingVerificationTasks[poolId];
+        
+        // If no task exists for this pool, we can't check yet, so return true (assume valid vesting)
+        if (taskIndex == 0) {
+            return true;
+        }
+        
+        // Check if the task has been responded to
+        bool hasResponse = vestingVerificationService.taskWasResponded(taskIndex);
+        
+        // If no response yet, return true (assume valid vesting for now)
+        if (!hasResponse) {
+            return true;
+        }
+        
+        // Get the task result (true if valid vesting was detected)
+        return vestingVerificationService.getTaskResult(taskIndex);
+    }
+    
+    /**
+     * @notice Create a vesting verification task for a pool
+     * @dev Only callable by the admin
+     * @param poolId The ID of the pool to create a task for
+     */
+    function createVestingVerificationTask(bytes32 poolId) external {
+        if (msg.sender != admin) {
+            revert NotAdmin();
+        }
+        
+        if (address(vestingVerificationService) == address(0)) {
+            return;
+        }
+        
+        // Check if we already have a task for this pool
+        uint32 taskIndex = poolVestingVerificationTasks[poolId];
+        
+        // If no task exists for this pool, create a new one
+        if (taskIndex == 0) {
+            // Create a new task to verify vesting for the pool's tokens
+            // We'll use token0 address as the token to analyze and token1 as the project address
+            vestingVerificationService.createNewTask(
+                poolsByPoolId[poolId].token0, 
+                poolsByPoolId[poolId].token1
+            );
+                
+            // Store the task index for future reference
+            taskIndex = uint32(block.number);
+            poolVestingVerificationTasks[poolId] = taskIndex;
+            
+            emit VestingVerificationTaskCreated(poolId, taskIndex, poolsByPoolId[poolId].token0, poolsByPoolId[poolId].token1);
+        }
+    }
+    
+    /**
+     * @notice Set the address of the vesting verification service
+     * @dev Only callable by the admin
+     * @param _vestingVerificationService The address of the vesting verification service
+     */
+    function setVestingVerificationService(address _vestingVerificationService) external {
+        if (msg.sender != admin) {
+            revert NotAdmin();
+        }
+        
+        vestingVerificationService = IVestingVerificationServiceManager(_vestingVerificationService);
+    }
+    
+    /**
+     * @notice Handle a response from the EigenLayer AVS for a vesting verification task
+     * @dev This function is called by the AVS validators to submit their response
+     * @param poolId The ID of the pool the task was created for
+     * @param taskIndex The index of the task
+     * @param result True if valid vesting or token lock was detected, false otherwise
+     */
+    function respondToVestingVerificationTask(bytes32 poolId, uint32 taskIndex, bool result) external {
+        // Verify that the task exists for this pool
+        if (poolVestingVerificationTasks[poolId] != taskIndex) {
+            revert TaskNotFound();
+        }
+        
+        // Only the vesting verification service can respond to tasks
+        if (msg.sender != address(vestingVerificationService)) {
+            revert UnauthorizedAVSResponse();
+        }
+        
+        // Forward the response to the service manager
+        vestingVerificationService.respondToTask(taskIndex, result);
+        
+        // Emit an event for the response
+        emit VestingVerificationTaskResponded(poolId, taskIndex, result);
     }
 
     /**
-     * @notice Placeholder function for checking malicious code patterns
-     * @dev Will be replaced with actual EigenLayer AVS integration with AI models
+     * @notice Check for malicious code patterns using EigenLayer AVS
+     * @dev Uses the EigenLayer AVS service to detect malicious code patterns in the pool's contract
+     * @param poolId The ID of the pool to check
      * @return result Boolean indicating if malicious code was detected (true = malicious)
      */
     function _checkForMaliciousCode(
-        bytes32 /* poolId */
-    ) internal pure returns (bool) {
-        // Placeholder - will be implemented with EigenLayer AVS integration
-        // This will use AI models to check for malicious code patterns, honeypots, etc.
+        bytes32 poolId
+    ) internal view returns (bool) {
+        // If no malicious code detection service is set, return false (no malicious code)
+        if (address(maliciousCodeDetectionService) == address(0)) {
+            return false;
+        }
 
-        // For now, return false (no malicious code) to allow testing
-        return false;
+        // Check if we already have a task for this pool
+        uint32 taskIndex = poolMaliciousCodeTasks[poolId];
+        
+        // If no task exists for this pool, we can't check yet, so return false (no malicious code)
+        if (taskIndex == 0) {
+            return false;
+        }
+        
+        // Check if the task has been responded to
+        bool hasResponse = maliciousCodeDetectionService.taskWasResponded(taskIndex);
+        
+        // If no response yet, return false (no malicious code detected yet)
+        if (!hasResponse) {
+            return false;
+        }
+        
+        // Get the task result (true if malicious code was detected)
+        return maliciousCodeDetectionService.getTaskResult(taskIndex);
+    }
+    
+    /**
+     * @notice Create a malicious code detection task for a pool
+     * @dev Only callable by the admin
+     * @param poolId The ID of the pool to create a task for
+     */
+    function createMaliciousCodeDetectionTask(bytes32 poolId) external {
+        if (msg.sender != admin) {
+            revert NotAdmin();
+        }
+        
+        if (address(maliciousCodeDetectionService) == address(0)) {
+            return;
+        }
+        
+        // Check if we already have a task for this pool
+        uint32 taskIndex = poolMaliciousCodeTasks[poolId];
+        
+        // If no task exists for this pool, create a new one
+        if (taskIndex == 0) {
+            // Create a new task to analyze the pool's token contracts
+            maliciousCodeDetectionService.createNewTask(poolsByPoolId[poolId].token0);
+                
+            // Store the task index for future reference
+            taskIndex = uint32(block.number);
+            poolMaliciousCodeTasks[poolId] = taskIndex;
+            
+            emit MaliciousCodeTaskCreated(poolId, taskIndex, poolsByPoolId[poolId].token0);
+        }
+    }
+    
+    /**
+     * @notice Set the address of the malicious code detection service
+     * @dev Only callable by the admin
+     * @param _maliciousCodeDetectionService The address of the malicious code detection service
+     */
+    function setMaliciousCodeDetectionService(address _maliciousCodeDetectionService) external {
+        if (msg.sender != admin) {
+            revert NotAdmin();
+        }
+        
+        maliciousCodeDetectionService = IMaliciousCodeDetectionServiceManager(_maliciousCodeDetectionService);
+    }
+    
+    /**
+     * @notice Handle a response from the EigenLayer AVS for a malicious code detection task
+     * @dev This function is called by the AVS validators to submit their response
+     * @param poolId The ID of the pool the task was created for
+     * @param taskIndex The index of the task
+     * @param result True if malicious code was detected, false otherwise
+     */
+    function respondToMaliciousCodeTask(bytes32 poolId, uint32 taskIndex, bool result) external {
+        // Verify that the task exists for this pool
+        if (poolMaliciousCodeTasks[poolId] != taskIndex) {
+            revert TaskNotFound();
+        }
+        
+        // Only the malicious code detection service can respond to tasks
+        if (msg.sender != address(maliciousCodeDetectionService)) {
+            revert UnauthorizedAVSResponse();
+        }
+        
+        // Forward the response to the service manager
+        maliciousCodeDetectionService.respondToTask(taskIndex, result);
+        
+        // Emit an event for the response
+        emit MaliciousCodeTaskResponded(poolId, taskIndex, result);
     }
 
     function getHookPermissions()
